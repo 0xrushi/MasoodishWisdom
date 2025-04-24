@@ -25,9 +25,9 @@ from f5_tts.infer.utils_infer import (
     infer_process,
     load_model,
     load_vocoder,
+    preprocess_ref_audio_text,
     remove_silence_for_generated_wav,
 )
-from ref_utils import load_ref_weights
 
 # ── USER CONFIG ────────────────────────────────────────────────────────────────
 config_path    = "infer/examples/basic/basic.toml"
@@ -35,6 +35,7 @@ model          = "F5TTS_v1_Base"
 model_cfg_path = None  # e.g. "path/to/your/model.yaml", or leave None to use default from config
 ckpt_file      = ""    # leave blank to pull from HF cache
 vocab_file     = ""    # leave blank to use default
+ref_audio      = "data/15sec.wav"
 ref_text       = (
     "Fuck your phone. Stop texting all the time. "
     "Look up from your phone and breathe. Release yourself."
@@ -74,14 +75,14 @@ fix_duration   = config.get("fix_duration", fix_duration)
 device         = config.get("device", device)
 
 # if user pointed at example paths inside the package, fix them
-# if "infer/examples/" in ref_audio:
-#     ref_audio = str(files("f5_tts").joinpath(ref_audio))
-# if gen_file and "infer/examples/" in gen_file:
-#     gen_file = str(files("f5_tts").joinpath(gen_file))
-# if "voices" in config:
-#     for v in config["voices"].values():
-#         if "infer/examples/" in v.get("ref_audio", ""):
-#             v["ref_audio"] = str(files("f5_tts").joinpath(v["ref_audio"]))
+if "infer/examples/" in ref_audio:
+    ref_audio = str(files("f5_tts").joinpath(ref_audio))
+if gen_file and "infer/examples/" in gen_file:
+    gen_file = str(files("f5_tts").joinpath(gen_file))
+if "voices" in config:
+    for v in config["voices"].values():
+        if "infer/examples/" in v.get("ref_audio", ""):
+            v["ref_audio"] = str(files("f5_tts").joinpath(v["ref_audio"]))
 
 # if using a gen_file, load its text
 if gen_file:
@@ -142,7 +143,7 @@ ema_model = load_model(
 )
 
 
-def generate_tts(input_text, output_dir="tests", output_file=None, ref_text=None):
+def generate_tts(input_text, output_dir="tests", output_file=None, ref_audio=ref_audio, ref_text=None):
     """
     Generate text-to-speech audio from input text.
     
@@ -150,6 +151,7 @@ def generate_tts(input_text, output_dir="tests", output_file=None, ref_text=None
         input_text (str): Text to convert to speech
         output_dir (str): Directory to save the output file (default: "tests")
         output_file (str): Output filename (default: auto-generated based on timestamp)
+        ref_audio (str): Reference audio file (default: "15sec.wav")
         ref_text (str): Reference text (default: predefined text)
     
     Returns:
@@ -166,10 +168,18 @@ def generate_tts(input_text, output_dir="tests", output_file=None, ref_text=None
     if output_file is None:
         output_file = f"infer_cli_{datetime.now():%Y%m%d_%H%M%S}.wav"
     
-    # load preprocessed reference weights
-    base_dir = os.path.dirname(os.path.dirname(__file__))
-    pkl_path = os.path.join(base_dir, "data", "ref_weights.pkl")
-    voices = load_ref_weights(pkl_path)
+    # assemble voices dict
+    main_voice = {"ref_audio": ref_audio, "ref_text": ref_text}
+    voices = {"main": main_voice}
+    if "voices" in config:
+        voices.update(config["voices"])
+        voices["main"] = main_voice
+
+    # preprocess all references
+    for name, v in voices.items():
+        v["ref_audio"], v["ref_text"] = preprocess_ref_audio_text(
+            v["ref_audio"], v["ref_text"]
+        )
 
     # break text into per‑voice chunks
     reg1 = r"(?=\[\w+\])"
